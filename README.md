@@ -55,4 +55,4 @@ Within terminal change to the cloned directory and run:
 
 `python gan_trainer.py`
 
-This will run the GAN training procedure with default parameters. Folder `/images` will be generated and contain generated images as the generator improves. An animation `anim.gif` will show generator evolution. 
+This will run the GAN training procedure with default parameters. Folder `/images` will be generated and an animation `anim.gif` will show generator evolution. 
