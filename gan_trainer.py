@@ -11,6 +11,7 @@ from keras.layers import BatchNormalization
 from keras.layers import Dense, Reshape, Flatten
 from keras.layers.advanced_activations import LeakyReLU
 from tensorflow.keras.optimizers import Adam
+import simplejson # for saving model architecture
 
 def build_generator():
     model = Sequential()
@@ -73,36 +74,98 @@ def save_imgs(r,c,path):
     fig.savefig("%s/%.8f.png" % (path,save_name))
     plt.close()
 
+def save_model_evolution(epochs,y,label,save_path):
+    e = list(range(epochs))
+    fig, axs = plt.subplots(1, 1)
+    axs.plot(e,y)
+    axs.title.set_text(label)
+    plt.xlabel("Epoch")
+    path = save_path
+    fname = label
+    n = "%s/%s.png" % (path,fname)
+    fig.savefig(n)
+    plt.close()
+    
 def train(epochs, batch_size, save_interval,X_train):
-  # Rescale images
-  X_train = X_train / 127.5 - 1.
+    # Rescale images
+    X_train = X_train / 127.5 - 1.
 
-  valid = np.ones((batch_size, 1))
-  fakes = np.zeros((batch_size, 1))
+    valid = np.ones((batch_size, 1))
+    fakes = np.zeros((batch_size, 1))
+    lst_d_loss = []
+    lst_d_acc = []
+    lst_g_loss = []
+    
+    for epoch in range(epochs):
+        # Get Random Batch
+        idx = np.random.randint(0, X_train.shape[0], batch_size)
+        imgs = X_train[idx]
 
-  for epoch in range(epochs):
-    # Get Random Batch
-    idx = np.random.randint(0, X_train.shape[0], batch_size)
-    imgs = X_train[idx]
+        # Generate Fake Images
+        noise = np.random.normal(0, 1, (batch_size, latent_dim))
+        gen_imgs = generator.predict(noise)
 
-    # Generate Fake Images
-    noise = np.random.normal(0, 1, (batch_size, latent_dim))
-    gen_imgs = generator.predict(noise)
+        # Train discriminator
+        d_loss_real = discriminator.train_on_batch(imgs, valid)
+        d_loss_fake = discriminator.train_on_batch(gen_imgs, fakes)
+        d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
 
-    # Train discriminator
-    d_loss_real = discriminator.train_on_batch(imgs, valid)
-    d_loss_fake = discriminator.train_on_batch(gen_imgs, fakes)
-    d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
+        noise = np.random.normal(0, 1, (batch_size, latent_dim))
 
-    noise = np.random.normal(0, 1, (batch_size, latent_dim))
+        # Train GAN
+        g_loss = GAN.train_on_batch(noise, valid)
 
-    # Train GAN
-    g_loss = GAN.train_on_batch(noise, valid)
+        acc = 100* d_loss[1]
 
-    if(epoch % save_interval) == 0:
-        print("******* %d [D loss: %f, acc: %.2f%%] [G loss: %f]" %
-              (epoch, d_loss[0], 100* d_loss[1], g_loss))
-        save_imgs(r=args.r,c=args.c,path=args.path)
+        lst_d_loss.append(d_loss[0])
+        lst_d_acc.append(acc)
+        lst_g_loss.append(g_loss)
+
+        if(epoch % save_interval) == 0:
+            print("******* %d [D loss: %f, acc: %.2f%%] [G loss: %f]" %
+                  (epoch, d_loss[0], acc, g_loss))
+            save_imgs(r=args.r,c=args.c,path=args.path)
+        
+    save_model_evolution(epochs=epochs,
+                         y=lst_d_loss,
+                         label="disc_loss",
+                         save_path=args.path)
+    save_model_evolution(epochs=epochs,
+                         y=lst_d_acc,
+                         label="disc_acc",
+                         save_path=args.path)
+    save_model_evolution(epochs=epochs,
+                         y=lst_g_loss,
+                         label="gen_loss",
+                         save_path=args.path)
+
+def create_animation(anim_file):
+    if ".gif" not in anim_file:
+        anim_file += ".gif"
+    with imageio.get_writer(anim_file, mode='I') as writer:
+        filenames = glob.glob('%s/*.png' % args.path)
+        filenames.remove('disc_loss.png')
+        filenames.remove('disc_acc.png')
+        filenames.remove('gen_loss.png')
+        filenames = sorted(filenames)
+        for filename in filenames:
+            image = imageio.imread(filename)
+            writer.append_data(image)
+        image = imageio.imread(filename)
+        writer.append_data(image)
+
+def save_models(path,d,g):
+    # serialize model architecture to JSON
+    g_json = g.to_json()
+    with open(path + "/generator.json", "w") as json_file:
+        json_file.write(simplejson.dumps(simplejson.loads(g_json), indent=4))
+    d_json = d.to_json()
+    with open(path + "/discriminator.json", "w") as json_file:
+        json_file.write(simplejson.dumps(simplejson.loads(d_json), indent=4))
+    
+    # serialize model weights to HDF5
+    g.save_weights(path + "/generator.h5")
+    d.save_weights(path + "/discriminator.h5") 
 
 if __name__ == '__main__':
     '''
@@ -138,6 +201,22 @@ if __name__ == '__main__':
                         type=str,
                         default="images",
                         help="Folder name or full path where drawn images will be saved. Defaults to 'images'")
+    parser.add_argument('--mod_path', dest='mod_path',
+                        type=str,
+                        default="models",
+                        help="Folder name or full path where models will be saved. Defaults to 'models'")
+    parser.add_argument('--train_on_number', dest='train_on_number',
+                        type=int,
+                        default=-1,
+                        help="If 'mnist' data selected train on a subset of this number only. Must be an integer between 0 and 9. Defaults to -1 which implies all numbers")
+    parser.add_argument('--train_on_subset', dest='train_on_subset',
+                        type=int,
+                        default=-1,
+                        help="If 'fashion_mnist' data selected train on a subset of this number only. Must be an integer between 0 and 9. See [https://keras.io/api/datasets/fashion_mnist/] for the explanation of numbers. Defaults to -1 which implies all types")
+    parser.add_argument('--create_anim', dest='create_anim',
+                        type=bool,
+                        default=False,
+                        help="Should a GIF animation be created? Defaults to False")
     parser.add_argument('--anim_file', dest='anim_file',
                         type=str,
                         default="anim.gif",
@@ -149,17 +228,39 @@ if __name__ == '__main__':
     try:
         os.mkdir(args.path)
     except:
-        print("Supplied folder name already exists. Please use another one")
+        print("Supplied images folder name already exists. Please use another one")
         sys.exit()
-
+    
+    print("Creating folder to store models")
+    try:
+        os.mkdir(args.mod_path)
+    except:
+        print("Supplied model folder name already exists. Please use another one")
+        sys.exit()
+        
     print("Loading data")
     if args.d == "mnist":
         from keras.datasets import mnist as data
+        if args.train_on_number == -1:
+            (X_train, _), (_, _) = data.load_data()
+            num_pics = X_train.shape[0]
+        else:
+            (X_train, y_train), (_, _) = data.load_data()
+            b = y_train==args.train_on_number
+            X_train = X_train[b]
+            num_pics = X_train.shape[0]
     else:
         from keras.datasets import fashion_mnist as data
-    (X_train, _), (_, _) = data.load_data()
-    num_pics = X_train.shape[0]
-    print("You have loaded %d images" %num_pics)
+        if args.train_on_subset == - 1:
+            (X_train, _), (_, _) = data.load_data()
+            num_pics = X_train.shape[0]
+        else:
+            (X_train, y_train), (_, _) = data.load_data()
+            b = y_train==args.train_on_subset
+            X_train = X_train[b]
+            num_pics = X_train.shape[0]
+        
+    print("You have loaded %d images from %s" %(num_pics,args.d))
 
     print("Setting global variables")
     img_width = 28
@@ -167,7 +268,7 @@ if __name__ == '__main__':
     channels = 1
     img_shape = (img_width, img_height, channels)
     latent_dim = 100
-    adam = Adam(lr=0.0001)
+    adam = Adam(learning_rate=0.0001)
 
     print("Building generator")
     generator = build_generator()
@@ -181,17 +282,11 @@ if __name__ == '__main__':
     print("Starting GAN training")
     train(args.epochs,args.batch,args.interval,X_train)
 
-    print("Making GIF")
-
-    anim_file = args.anim_file
-    if ".gif" not in anim_file:
-        anim_file += ".gif"
-    with imageio.get_writer(anim_file, mode='I') as writer:
-        filenames = glob.glob('%s/*.png' % args.path)
-        filenames = sorted(filenames)
-        for filename in filenames:
-            image = imageio.imread(filename)
-            writer.append_data(image)
-        image = imageio.imread(filename)
-        writer.append_data(image)
+    if args.create_anim:
+        print("Making GIF")
+        create_animation(args.anim_file)
+    
+    print("Saving models")
+    save_models(path=args.mod_path,d=discriminator,g=generator)
+    
     print("DONE")
